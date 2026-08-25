@@ -499,11 +499,11 @@ const eyeMat=new THREE.MeshPhysicalMaterial({
   clearcoat:1,clearcoatRoughness:0.12,
   emissive:0x000000,emissiveIntensity:1,
 });
-function makeEye(r,len,x,y,tilt,wide,tall){
+function makeEye(r,len,x,y,tilt){
   const holder=new THREE.Group();
   const m=new THREE.Mesh(new THREE.CapsuleGeometry(r,len,8,32),eyeMat);
-  m.rotation.z=tilt; m.scale.set(wide,tall,0.25); // flat inlay, not a pill
-  holder.add(m);
+  m.rotation.z=tilt; m.scale.set(1,1,0.25); // z-flatten only — never stretch
+  holder.add(m);                            // x/y or the round caps deform
   const z=Math.sqrt(Math.max(0.1,1.62*1.62-x*x-y*y));
   holder.position.set(x,y,z-0.01);
   holder.rotation.y=Math.asin(x/1.62)*0.9;   // follow curvature
@@ -511,11 +511,11 @@ function makeEye(r,len,x,y,tilt,wide,tall){
   bot.add(holder);
   return holder;
 }
-/* measured off the icon: pair sits just above the midline;
-   left eye = fat, slightly lower, gentle slant (~21°);
-   right eye = long + thin, up-right, steep slant (~40°). both "\". */
-const eyeL=makeEye(0.29,0.42,-0.30,-0.18,0.37,1.28,1.10);
-const eyeR=makeEye(0.19,0.60,  0.55, 0.30,0.70,0.82,1.25);
+/* two clean capsules of the same family, like the icon:
+   similar length, left ~40% wider and slightly lower, both slant "\",
+   right a bit steeper. sized via geometry, not scale. */
+const eyeL=makeEye(0.24,0.42,-0.28,-0.16,0.35);
+const eyeR=makeEye(0.17,0.48,  0.52, 0.28,0.55);
 window.__rig={bot,eyeL,eyeR,cam}; // live-tuning handle
 
 /* idle look-around targets */
