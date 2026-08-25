@@ -170,7 +170,7 @@
 </header>
 
 <div id="left">
-  <div class="panehdr">cognitive core</div>
+  <div class="panehdr">unit — grokbot</div>
   <div id="brainwrap">
     <canvas id="brain" width="600" height="520"></canvas>
     <div id="brainlabel">neural activity — nominal</div>
@@ -244,52 +244,10 @@ setInterval(()=>{
   $('clock').textContent=new Date().toISOString().slice(11,19)+' utc';
 },1000);
 
-/* ---------- neural core (plain canvas point-cloud) ---------- */
-const cv=$('brain'),ctx=cv.getContext('2d');
-const N=260,pts=[];
-for(let i=0;i<N;i++){ // fibonacci sphere
-  const y=1-(i/(N-1))*2, r=Math.sqrt(1-y*y), th=i*2.39996;
-  pts.push({x:Math.cos(th)*r,y,z:Math.sin(th)*r,ph:Math.random()*6.28});
-}
-let excite=0; // 0 calm .. 1 firing
-function drawBrain(t){
-  const W=cv.width,H=cv.height,cx=W/2,cy=H/2,R=Math.min(W,H)*0.27;
-  ctx.clearRect(0,0,W,H);
-  const rotY=t*0.00022,rotX=Math.sin(t*0.00011)*0.35;
-  const pr=[];
-  for(const p of pts){
-    const wob=1+Math.sin(t*0.002+p.ph)*0.025*(1+excite*2);
-    let x=p.x*wob,y=p.y*wob,z=p.z*wob;
-    let x1=x*Math.cos(rotY)+z*Math.sin(rotY), z1=z*Math.cos(rotY)-x*Math.sin(rotY);
-    let y1=y*Math.cos(rotX)-z1*Math.sin(rotX); z1=z1*Math.cos(rotX)+y*Math.sin(rotX);
-    const s=1/(2.1-z1);
-    pr.push({sx:cx+x1*R*s*2.1, sy:cy+y1*R*s*2.1, z:z1, s});
-  }
-  // connections (sampled, cheap)
-  ctx.lineWidth=1;
-  for(let i=0;i<N;i+=3){
-    const a=pr[i];
-    for(let j=i+1;j<i+14&&j<N;j+=4){
-      const b=pr[j],dx=a.sx-b.sx,dy=a.sy-b.sy,d2=dx*dx+dy*dy;
-      if(d2<2400){
-        const al=(1-d2/2400)*0.16*(0.5+(a.z+1)/2)*(1+excite);
-        ctx.strokeStyle=excite>0.5?`rgba(57,255,136,${al})`:`rgba(181,181,181,${al})`;
-        ctx.beginPath();ctx.moveTo(a.sx,a.sy);ctx.lineTo(b.sx,b.sy);ctx.stroke();
-      }
-    }
-  }
-  // points
-  for(const p of pr){
-    const depth=(p.z+1)/2;
-    const fire=excite>0&&Math.random()<excite*0.06;
-    ctx.fillStyle=fire?'rgba(57,255,136,.9)':`rgba(200,200,200,${0.12+depth*0.5})`;
-    const r=(0.8+depth*1.4)*(fire?1.8:1);
-    ctx.fillRect(p.sx-r/2,p.sy-r/2,r,r);
-  }
-  excite=Math.max(0,excite-0.004);
-  requestAnimationFrame(drawBrain);
-}
-requestAnimationFrame(drawBrain);
+/* ---------- grokbot excitement (0 calm .. 1 firing) ----------
+   Set by feed events below; the 3D grokbot module at the bottom
+   reads it, reacts (green eyes, jitter), and decays it. */
+let excite=0;
 
 /* ---------- feed ---------- */
 const feedbody=$('feedbody'),cursor=$('cursorline');
@@ -499,6 +457,103 @@ function startSim(){
     renderSignals();
   },2500);
 }
+</script>
+
+<script type="module">
+/* ---------- grokbot — the unit itself (Three.js) ---------- */
+import * as THREE from 'https://unpkg.com/three@0.160.0/build/three.module.js';
+
+const cv=document.getElementById('brain');
+const renderer=new THREE.WebGLRenderer({canvas:cv,antialias:true,alpha:true});
+renderer.setSize(600,520,false);
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+
+const scene=new THREE.Scene();
+const cam=new THREE.PerspectiveCamera(32,600/520,0.1,50);
+cam.position.set(0,0.3,6.4);
+cam.lookAt(0,0,0);
+
+/* lighting: soft studio, like the render */
+scene.add(new THREE.HemisphereLight(0xffffff,0x1a1a1a,0.5));
+const key=new THREE.DirectionalLight(0xffffff,1.9); key.position.set(-2.5,3.5,4); scene.add(key);
+const fill=new THREE.DirectionalLight(0xffffff,0.35); fill.position.set(2.5,-0.5,3); scene.add(fill);
+const rim=new THREE.DirectionalLight(0x9fb4cc,0.5); rim.position.set(2,1.5,-4); scene.add(rim);
+const flash=new THREE.PointLight(0x39ff88,0,12); flash.position.set(0,0.4,3); scene.add(flash);
+
+const bot=new THREE.Group(); scene.add(bot);
+
+/* body: glossy white blob */
+const bodyMat=new THREE.MeshPhysicalMaterial({
+  color:0xf2f2f2,roughness:0.3,metalness:0,
+  clearcoat:0.8,clearcoatRoughness:0.2,
+});
+const body=new THREE.Mesh(new THREE.SphereGeometry(1.62,96,96),bodyMat);
+bot.add(body);
+
+/* eyes: two slanted black glass capsules flattened against the surface,
+   like the icon. holder = position + blink scale; inner mesh = slant.
+   NOTE: no bevel ring — a near-coplanar white rim occludes the black
+   capsule at glancing angles and wrecks the face. */
+const eyeMat=new THREE.MeshPhysicalMaterial({
+  color:0x060606,roughness:0.28,metalness:0,
+  clearcoat:1,clearcoatRoughness:0.12,
+  emissive:0x000000,emissiveIntensity:1,
+});
+function makeEye(r,len,x,y,tilt){
+  const holder=new THREE.Group();
+  const m=new THREE.Mesh(new THREE.CapsuleGeometry(r,len,8,32),eyeMat);
+  m.rotation.z=tilt; m.scale.z=0.25; // flat inlay, not a pill
+  holder.add(m);
+  const z=Math.sqrt(Math.max(0.1,1.62*1.62-x*x-y*y));
+  holder.position.set(x,y,z-0.01);
+  holder.rotation.y=Math.asin(x/1.62)*0.9;   // follow curvature
+  holder.rotation.x=-Math.asin(y/1.62)*0.9;
+  bot.add(holder);
+  return holder;
+}
+const eyeL=makeEye(0.29,0.42,-0.20,-0.24,-0.38);
+const eyeR=makeEye(0.19,0.60,  0.60, 0.40,-0.46);
+window.__rig={bot,eyeL,eyeR,cam}; // live-tuning handle
+
+/* idle look-around targets */
+let yaw=0,pitch=0,tyaw=0,tpitch=0;
+(function retarget(){
+  tyaw=(Math.random()-0.5)*0.55;
+  tpitch=(Math.random()-0.5)*0.28;
+  setTimeout(retarget,2500+Math.random()*4000);
+})();
+
+/* blink */
+let blink=1,blinkT=0;
+(function scheduleBlink(){
+  blinkT=1; // trigger
+  setTimeout(scheduleBlink,2600+Math.random()*4500);
+})();
+
+const gcol=new THREE.Color(0x39ff88);
+function frame(t){
+  // look around (snappier when excited)
+  const k=0.02+excite*0.06;
+  yaw+=(tyaw-yaw)*k; pitch+=(tpitch-pitch)*k;
+  bot.rotation.y=yaw+Math.sin(t*0.0004)*0.06+(excite>0.4?(Math.random()-0.5)*0.02*excite:0);
+  bot.rotation.x=pitch*0.6+Math.sin(t*0.0007)*0.03;
+  bot.position.y=Math.sin(t*0.0011)*0.07;
+  // breathing + excite pulse
+  const s=1+Math.sin(t*0.0016)*0.012+excite*0.02*Math.sin(t*0.03);
+  bot.scale.setScalar(s);
+  // blink (fast close, slower open)
+  if(blinkT>0){blink-=0.28;if(blink<=0.08){blink=0.08;blinkT=0}}
+  else if(blink<1)blink=Math.min(1,blink+0.14);
+  eyeL.scale.y=blink;eyeR.scale.y=blink;
+  // excitement: eyes stay black in normal ops; only real spikes flash green
+  const spike=Math.max(0,excite-0.45)*1.6;
+  eyeMat.emissive.copy(gcol).multiplyScalar(spike);
+  flash.intensity=spike*2.6;
+  excite=Math.max(0,excite-0.006);
+  renderer.render(scene,cam);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
 </script>
 </body>
 </html>
