@@ -1,12 +1,19 @@
 {
   "name": "grokdev-brain",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node --test test/*.test.js",
+    "generate-wallet": "node scripts/generate-wallet.js",
+    "dry-run": "node scripts/dry-run.js --fixture test/fixtures/tweet.json"
   },
   "dependencies": {
+    "@pump-fun/pump-sdk": "^1.36.0",
+    "@solana/web3.js": "^1.98.2",
+    "bn.js": "^5.2.2",
+    "bs58": "^5.0.0",
     "ws": "^8.18.0"
   }
 }
