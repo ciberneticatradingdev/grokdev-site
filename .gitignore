@@ -1,3 +1,4 @@
 node_modules/
 brain/state.json
 .env
+.vercel/
