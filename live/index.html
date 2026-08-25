@@ -499,10 +499,10 @@ const eyeMat=new THREE.MeshPhysicalMaterial({
   clearcoat:1,clearcoatRoughness:0.12,
   emissive:0x000000,emissiveIntensity:1,
 });
-function makeEye(r,len,x,y,tilt,wide){
+function makeEye(r,len,x,y,tilt,wide,tall){
   const holder=new THREE.Group();
   const m=new THREE.Mesh(new THREE.CapsuleGeometry(r,len,8,32),eyeMat);
-  m.rotation.z=tilt; m.scale.set(wide,1,0.25); // flat inlay, not a pill
+  m.rotation.z=tilt; m.scale.set(wide,tall,0.25); // flat inlay, not a pill
   holder.add(m);
   const z=Math.sqrt(Math.max(0.1,1.62*1.62-x*x-y*y));
   holder.position.set(x,y,z-0.01);
@@ -511,9 +511,11 @@ function makeEye(r,len,x,y,tilt,wide){
   bot.add(holder);
   return holder;
 }
-// left eye: fat + low. right eye: thin + high. both slant "\" like the icon.
-const eyeL=makeEye(0.29,0.42,-0.24,-0.36,0.62,1.3);
-const eyeR=makeEye(0.19,0.60,  0.60, 0.42,0.62,0.85);
+/* measured off the icon: pair sits just above the midline;
+   left eye = fat, slightly lower, gentle slant (~21°);
+   right eye = long + thin, up-right, steep slant (~40°). both "\". */
+const eyeL=makeEye(0.29,0.42,-0.30,-0.18,0.37,1.28,1.10);
+const eyeR=makeEye(0.19,0.60,  0.55, 0.30,0.70,0.82,1.25);
 window.__rig={bot,eyeL,eyeR,cam}; // live-tuning handle
 
 /* idle look-around targets */
@@ -524,12 +526,19 @@ let yaw=0,pitch=0,tyaw=0,tpitch=0;
   setTimeout(retarget,2500+Math.random()*4000);
 })();
 
-/* blink */
-let blink=1,blinkT=0;
+/* blink — time-based so throttled tabs don't get stuck mid-blink */
+let blinkStart=-1e9;
 (function scheduleBlink(){
-  blinkT=1; // trigger
+  blinkStart=performance.now();
   setTimeout(scheduleBlink,2600+Math.random()*4500);
 })();
+function blinkAmount(t){
+  const bt=t-blinkStart;
+  if(bt<0||bt>360)return 1;
+  if(bt<110)return 1-(bt/110)*0.92;      // close
+  if(bt<180)return 0.08;                 // hold
+  return 0.08+((bt-180)/180)*0.92;       // open
+}
 
 const gcol=new THREE.Color(0x39ff88);
 function frame(t){
@@ -542,9 +551,8 @@ function frame(t){
   // breathing + excite pulse
   const s=1+Math.sin(t*0.0016)*0.012+excite*0.02*Math.sin(t*0.03);
   bot.scale.setScalar(s);
-  // blink (fast close, slower open)
-  if(blinkT>0){blink-=0.28;if(blink<=0.08){blink=0.08;blinkT=0}}
-  else if(blink<1)blink=Math.min(1,blink+0.14);
+  // blink
+  const blink=blinkAmount(t);
   eyeL.scale.y=blink;eyeR.scale.y=blink;
   // excitement: eyes stay black in normal ops; only real spikes flash green
   const spike=Math.max(0,excite-0.45)*1.6;
