@@ -229,6 +229,7 @@
      {type:'armory', rows:[{id,narrative,conf,status}]}
      {type:'signal', rows:[{handle,vel}]}          // vel 0..1
      {type:'overlay', title:'TICKER ARMED', sub:'a-014 — ai personality collision', color:'amber|green|plain'}
+     {type:'wallet', address:'<pubkey or null>', deployEnabled:false, deployMode:'observe-only|dry-run|live'}
    ============================================================ */
 
 const $=id=>document.getElementById(id);
@@ -351,6 +352,10 @@ window.Grok={
     else if(e.type==='armory'){ARM=e.rows;renderArmory();renderTicker()}
     else if(e.type==='signal'){SIG=e.rows;renderSignals()}
     else if(e.type==='overlay')overlay(e.title,e.sub,e.color);
+    else if(e.type==='wallet'){
+      $('v-wallet').textContent=e.address||'no wallet';
+      $('v-wallet').title=(e.deployMode||'')+(e.deployEnabled?' · live gate open':' · gate closed');
+    }
   }
 };
 

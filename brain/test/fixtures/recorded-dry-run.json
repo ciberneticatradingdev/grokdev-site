@@ -1,0 +1,19 @@
+{
+  "note": "Recorded 2026-08-25 against mainnet RPC. Unfunded generated wallet. Transaction was built and simulated, never sent.",
+  "sent": false,
+  "deployEnabled": false,
+  "programId": "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P",
+  "tokenProgram": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+  "solLamports": 10000000,
+  "instructionCount": 5,
+  "instructions": [
+    { "programId": "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P", "keys": 16 },
+    { "programId": "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL", "keys": 6 },
+    { "programId": "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P", "keys": 18 }
+  ],
+  "simulate": {
+    "ok": false,
+    "err": "AccountNotFound",
+    "reason": "payer wallet has never been funded — expected for a generate-once dry-run"
+  }
+}

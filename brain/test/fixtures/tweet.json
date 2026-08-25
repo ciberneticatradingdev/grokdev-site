@@ -1,0 +1,11 @@
+{
+  "id": "1882368585664626774",
+  "text": "the frog has entered the chat. $FROG season is a joke and I am not launching it.",
+  "author": "example_dev",
+  "url": "https://x.com/example_dev/status/1882368585664626774",
+  "created_at": "2026-08-24T20:00:00.000Z",
+  "media": [
+    { "url": "https://example.invalid/frog.png", "type": "photo" }
+  ],
+  "source": "fixture"
+}

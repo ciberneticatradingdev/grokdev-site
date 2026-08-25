@@ -1,20 +1,20 @@
 /* ============================================================
-   grokdev brain — observe-only cognition engine, v1
+   grokdev brain — cognition engine + gated operator deployer, v2
    Watches pump.fun for real, scores attention velocity in code,
    and narrates what it sees over WebSocket to the /live page.
 
-   - No wallet, no trades, no deploys. Observation + public calls.
-   - LLM (xAI) is the VOICE only; every fact in a line comes from
-     the engine. Without XAI_API_KEY it falls back to dry template
-     lines built from the same real data.
+   Deploys are OFF unless DEPLOY_ENABLED=1. Default is observe +
+   dry-run. The LLM is the VOICE only; it cannot open the gate.
 
-   env: PORT (default 8969), XAI_API_KEY (optional),
-        XAI_MODEL (default grok-4-fast-non-reasoning)
+   env: PORT, XAI_*, ANTHROPIC_*, WALLET_*, DEPLOY_*, SOLANA_RPC_URL,
+        PINATA_JWT, X_BEARER_TOKEN, X_WATCH_ACCOUNTS — see README
+        and brain/.env.example.
    ============================================================ */
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const { WebSocketServer } = require('ws');
+const deployer = require('./deployer');
 
 const PORT = process.env.PORT || 8969;
 const XAI_KEY = process.env.XAI_API_KEY || '';
@@ -32,35 +32,186 @@ const feedTail = [];          // last lines for backfill {t,tag,msg}
 const sigTimes = [];          // SIGNAL timestamps for sig/hr
 const mentionCooldown = new Map(); // mint -> ts
 let bootT = Date.now();
+let lastArmed = null;
+let lastDeploy = null;
+let deployHistory = [];
+const seenTweets = new Set();
 
 try {
   const s = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
   armory = s.armory || []; record = s.record || record;
   armoryCounter = s.armoryCounter || armoryCounter;
+  lastArmed = s.lastArmed || null;
+  lastDeploy = s.lastDeploy || null;
+  deployHistory = s.deployHistory || [];
+  for (const id of s.seenTweets || []) seenTweets.add(id);
 } catch (e) { /* fresh boot */ }
 function persist() {
-  try { fs.writeFileSync(STATE_FILE, JSON.stringify({ armory, record, armoryCounter })); } catch (e) {}
+  try {
+    fs.writeFileSync(STATE_FILE, JSON.stringify({
+      armory, record, armoryCounter, lastArmed, lastDeploy, deployHistory,
+      seenTweets: [...seenTweets].slice(-200),
+    }));
+  } catch (e) {}
+}
+
+function cors(res) {
+  res.setHeader('access-control-allow-origin', '*');
+  res.setHeader('access-control-allow-headers', 'content-type, x-operator-secret, authorization');
+  res.setHeader('access-control-allow-methods', 'GET,POST,OPTIONS');
+}
+function json(res, code, obj) {
+  cors(res);
+  res.statusCode = code;
+  res.setHeader('content-type', 'application/json');
+  res.end(JSON.stringify(obj));
+}
+function readJson(req, limit = 1_000_000) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let n = 0;
+    req.on('data', c => {
+      n += c.length;
+      if (n > limit) { reject(new Error('body too large')); req.destroy(); }
+      else chunks.push(c);
+    });
+    req.on('end', () => {
+      if (!chunks.length) return resolve({});
+      try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8'))); }
+      catch (e) { reject(new Error('invalid json')); }
+    });
+    req.on('error', reject);
+  });
+}
+function deployerRuntime() {
+  return { lastArmed, lastDeploy, deployHistory };
+}
+function publicSnapshot() {
+  return {
+    up: Date.now() - bootT,
+    watching: watch.size,
+    armory,
+    record,
+    metas: hotMetas().map(m => m.word),
+    ...deployer.publicState(deployerRuntime()),
+  };
+}
+function emitWallet(ws) {
+  const st = deployer.publicState(deployerRuntime());
+  const ev = { type: 'wallet', address: st.wallet, deployEnabled: st.deployEnabled, deployMode: st.deployMode };
+  if (ws) send(ws, ev); else broadcast(ev);
+}
+function emitArmed(proposal, tweet) {
+  lastArmed = {
+    t: Date.now(),
+    name: proposal.name,
+    symbol: proposal.symbol,
+    tweetUrl: tweet?.url || proposal.twitter || null,
+    imageSource: proposal.imageSource,
+  };
+  line('arm', `armed $${proposal.symbol} — ${proposal.name}`.slice(0, 140));
+  overlay('TICKER ARMED', `$${proposal.symbol} — ${proposal.name}`.slice(0, 80), 'amber');
+  persist();
+}
+function emitDeployAttempt(attempt) {
+  lastDeploy = {
+    t: attempt.t,
+    mode: attempt.mode,
+    ok: !!attempt.ok,
+    name: attempt.name,
+    symbol: attempt.symbol,
+    mint: attempt.mint || null,
+    signature: attempt.signature || null,
+    error: attempt.error || null,
+    gated: !!attempt.gated,
+    would: attempt.would || null,
+  };
+  deployHistory.unshift({ t: attempt.t, mode: attempt.mode, ok: !!attempt.ok, symbol: attempt.symbol });
+  deployHistory = deployHistory.slice(0, 40);
+  if (attempt.mode === 'live' && attempt.ok && attempt.signature) {
+    line('dep', `deployed $${attempt.symbol}. mint ${attempt.mint}. sig ${attempt.signature}`.slice(0, 140));
+    overlay('DEPLOYED', `$${attempt.symbol} — ${attempt.mint}`.slice(0, 80), 'green');
+  } else {
+    const msg = attempt.would || `dry-run $${attempt.symbol}: ${attempt.error || 'not sent'}`;
+    line('dep', msg.slice(0, 140));
+    overlay('DRY-RUN DEPLOY', `$${attempt.symbol} — not on chain`.slice(0, 80), 'amber');
+    console.log('[would-deploy]', attempt.would || attempt.error || JSON.stringify(lastDeploy));
+  }
+  persist();
+  pushVitals();
 }
 
 /* ---------------- ws broadcast ---------------- */
 const server = http.createServer((req, res) => {
-  if (req.url === '/health') { res.end('ok'); return; }
-  if (req.url === '/state') {
-    res.setHeader('content-type', 'application/json');
-    res.end(JSON.stringify({ up: Date.now() - bootT, watching: watch.size, armory, record, metas: hotMetas().map(m => m.word) }));
+  const u = new URL(req.url, 'http://local');
+  cors(res);
+  if (req.method === 'OPTIONS') { res.end(); return; }
+  if (u.pathname === '/health') { res.end('ok'); return; }
+  if (u.pathname === '/state' && req.method === 'GET') {
+    json(res, 200, publicSnapshot());
+    return;
+  }
+  if (u.pathname === '/wallet' && req.method === 'GET') {
+    const st = deployer.publicState(deployerRuntime());
+    json(res, 200, { wallet: st.wallet, deployEnabled: st.deployEnabled, deployMode: st.deployMode });
+    return;
+  }
+  if ((u.pathname === '/tweet' || u.pathname === '/deploy') && req.method === 'POST') {
+    handleOperator(req, res, u.pathname).catch(e => {
+      console.error(u.pathname, e.message);
+      json(res, 400, { error: e.message });
+    });
     return;
   }
   res.setHeader('content-type', 'text/plain');
-  res.end('grokdev brain. observe-only. ws on this port.\n');
+  const st = deployer.publicState(deployerRuntime());
+  res.end(`grokdev brain. mode ${st.deployMode}. wallet ${st.wallet || 'none'}. ws on this port.\n`);
 });
 const wss = new WebSocketServer({ server });
 function send(ws, obj) { try { ws.send(JSON.stringify(obj)); } catch (e) {} }
 function broadcast(obj) { const s = JSON.stringify(obj); wss.clients.forEach(c => { try { c.send(s); } catch (e) {} }); }
 
+async function handleOperator(req, res, pathname) {
+  const auth = deployer.requireOperator(req);
+  if (!auth.ok) { json(res, 401, { error: auth.error }); return; }
+  const body = await readJson(req);
+  if (pathname === '/tweet') {
+    const { tweet, proposal } = await deployer.ingestAndPropose({ url: body.url, tweet: body.tweet });
+    emitArmed(proposal, tweet);
+    json(res, 200, { tweet, proposal, lastArmed });
+    return;
+  }
+  const dryRun = body.dryRun !== false;
+  const result = await deployer.runDeploy({
+    url: body.url,
+    tweet: body.tweet,
+    name: body.name,
+    symbol: body.symbol,
+    uri: body.uri,
+    imageUrl: body.imageUrl,
+    solLamports: body.solLamports,
+    dryRun,
+    runtime: deployerRuntime(),
+  });
+  if (result.proposal) emitArmed(result.proposal, result.tweet);
+  emitDeployAttempt(result.attempt);
+  json(res, 200, {
+    proposal: result.proposal,
+    tweet: result.tweet,
+    metadata: result.metadata,
+    attempt: result.attempt,
+    built: result.built,
+    sent: result.sent,
+    simulated: result.simulated || null,
+    signature: result.signature || null,
+  });
+}
+
 wss.on('connection', ws => {
   send(ws, { type: 'backfill', lines: feedTail.slice(-22) });
   send(ws, { type: 'armory', rows: armory });
   send(ws, { type: 'signal', rows: signalRows() });
+  emitWallet(ws);
   pushVitals(ws);
 });
 
@@ -80,7 +231,8 @@ function pushVitals(ws) {
   const load = Math.min(0.95, 0.2 + sigTimes.length * 0.04 + armed * 0.05);
   const v = [
     ['load', +load.toFixed(2)], ['sig', sigTimes.length], ['acc', watch.size],
-    ['narr', hotMetas(2).length], ['armed', armed], ['dep', 0],
+    ['narr', hotMetas(2).length], ['armed', armed],
+    ['dep', deployHistory.filter(h => h.mode === 'live' && h.ok).length],
   ];
   for (const [key, value] of v) (ws ? send(ws, { type: 'vital', key, value }) : broadcast({ type: 'vital', key, value }));
 }
@@ -325,15 +477,49 @@ async function llmCommentary(flagged) {
 }
 
 /* ---------------- boot ---------------- */
+async function pollWatchedAccounts() {
+  const accounts = deployer.tweet.parseWatchAccounts();
+  if (!accounts.length || !deployer.tweet.xConfigured()) return;
+  for (const acct of accounts) {
+    try {
+      const tweets = await deployer.tweet.fetchUserTweets(acct);
+      for (const t of tweets) {
+        if (!t.id || seenTweets.has(t.id)) continue;
+        seenTweets.add(t.id);
+        const proposal = deployer.propose.proposeFromTweet(t);
+        emitArmed(proposal, t);
+        line('obs', `watched @${acct}: proposed $${proposal.symbol}. gate closed unless DEPLOY_ON_WATCH=1.`);
+        if (deployer.gate.isWatchAutodeploy()) {
+          const result = await deployer.runDeploy({ tweet: t, dryRun: false, runtime: deployerRuntime() });
+          emitDeployAttempt(result.attempt);
+        }
+      }
+    } catch (e) { console.error('watch', acct, e.message); }
+  }
+  persist();
+}
+
 server.listen(PORT, () => {
   console.log('grokdev brain on :' + PORT);
-  line('sys', 'brain online. observe-only mode. no wallet attached, no deploys enabled.');
+  const st = deployer.publicState(deployerRuntime());
+  const walletBit = st.wallet ? 'wallet ' + st.walletShort : 'no wallet attached';
+  const gateBit = st.deployEnabled
+    ? 'DEPLOY_ENABLED=1 — live creates allowed'
+    : 'deploy gate closed (dry-run only)';
+  line('sys', `brain online. ${walletBit}. ${gateBit}.`);
   line('obs', 'cold start: building the watchlist from live pump.fun launches.');
+  emitWallet();
   pollNew();
   setInterval(pollNew, 25e3);
   setInterval(pollWatched, 45e3);
   setInterval(cognitionTick, 40e3);
   setInterval(persist, 120e3);
+  const watchMs = Number(process.env.X_POLL_MS) || 180e3;
+  if (deployer.tweet.parseWatchAccounts().length && deployer.tweet.xConfigured()) {
+    line('sys', 'x watch accounts configured. proposing only — no auto-spray.');
+    pollWatchedAccounts();
+    setInterval(pollWatchedAccounts, watchMs);
+  }
   setInterval(() => { // hourly record summary — the track record is the product
     if (record.correct + record.wrong > 0)
       line('obs', `record so far: ${record.correct} correct, ${record.wrong} wrong, ${record.unresolved} open. errors stay published.`);
