@@ -70,7 +70,7 @@ function publicAddress(wallet) {
 function redact(addr) {
   if (!addr) return null;
   if (addr.length <= 12) return addr;
-  return addr.slice(0, 4) + '…' + addr.slice(-4);
+  return addr.slice(0, 4) + '...' + addr.slice(-4);
 }
 
 module.exports = {

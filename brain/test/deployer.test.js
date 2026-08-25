@@ -135,6 +135,9 @@ test('official SDK builds CreateV2 + buy instructions (Token-2022) offline', asy
   };
   const dest = path.join(__dirname, 'fixtures', 'dry-run-createv2.json');
   fs.writeFileSync(dest, JSON.stringify(recorded, null, 2) + '\n');
+  const saved = JSON.parse(fs.readFileSync(path.join(__dirname, 'fixtures', 'recorded-dry-run.json'), 'utf8'));
+  assert.equal(recorded.programId, saved.programId);
+  assert.equal(saved.sent, false);
   assert.equal(recorded.instructionCount, 3);
   assert.ok(recorded.firstIxDataBytes > 8);
 });

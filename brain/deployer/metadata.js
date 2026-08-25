@@ -136,7 +136,7 @@ async function resolveMetadata({ proposal, uri, imageUrl, env = process.env, fet
     return {
       uploaded: false,
       uri: explicitUri,
-      metadata: { ...metaPreview, image: explicitUri },
+      metadata: metaPreview,
       imageSource: proposal.imageSource,
       imageBytes: image.bytes,
       imageMime: image.mime,
