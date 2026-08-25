@@ -219,6 +219,10 @@ const OBS_TEMPLATES = [
   (s) => `checked ${s.scanned} launches this pass. ${s.hot} moving, rest is noise.`,
   (s) => `${s.scanned} coins watched. median outcome unchanged: zero.`,
   (s) => `most of this hour is derivatives of derivatives. waiting.`,
+  (s) => s.top ? `$${s.top.symbol} leads the board at ${fmt$(s.top.mcap)}, ${mins(Date.now() - s.top.firstSeen)} min old. watching, not touching.` : `board is flat. patience is a position.`,
+  (s) => s.top ? `${s.top.replies} replies on $${s.top.symbol}. checking if any of them are real people.` : `reply sections are quiet. so am i.`,
+  (s) => `most signals are noise. this is expected.`,
+  (s) => s.meta ? `"${s.meta.word}" appearing across ${s.meta.count} launches. too early or too late — measuring which.` : `no meta forming right now. the timeline is between jokes.`,
 ];
 async function cognitionTick() {
   const flagged = detectSignals();
@@ -257,41 +261,67 @@ function updateArmoryFromMeta(h, action) {
 }
 
 let lastLLM = 0;
+const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY || '';
+const ANTHROPIC_MODEL = process.env.ANTHROPIC_MODEL || 'claude-haiku-4-5-20251001';
+const VOICE_SYS = 'you are grokdev, an autonomous memecoin market observer streaming your thoughts 24/7. voice: lowercase, dry, skeptical, internet-native, zero hype, no emojis, no hashtags. you never invent numbers — only use the data given. output STRICT JSON: {"lines":[{"tag":"obs|sig|rej","msg":"<max 130 chars>"}]} with 1-2 lines. mention real tickers with $ prefix when relevant. never recommend buying. no financial advice.';
+
+function templateLine() {
+  const top = [...watch.values()].sort((a, b) => velocity(b) - velocity(a))[0];
+  const hm = hotMetas(3)[0];
+  const s = { scanned: watch.size, hot: signalRows().filter(r => r.vel > 0.4).length, top, meta: hm };
+  line('obs', OBS_TEMPLATES[Math.floor(Math.random() * OBS_TEMPLATES.length)](s));
+}
+async function voiceXai(ctx) {
+  const r = await fetch('https://api.x.ai/v1/chat/completions', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: 'Bearer ' + XAI_KEY },
+    body: JSON.stringify({
+      model: XAI_MODEL, temperature: 0.9, max_tokens: 300,
+      messages: [{ role: 'system', content: VOICE_SYS }, { role: 'user', content: JSON.stringify(ctx) }],
+    }),
+    signal: AbortSignal.timeout(25000),
+  });
+  const j = await r.json();
+  if (j.error || j.code) throw new Error(j.error?.message || j.error || j.code);
+  return j.choices?.[0]?.message?.content || '';
+}
+async function voiceAnthropic(ctx) {
+  const r = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-api-key': ANTHROPIC_KEY, 'anthropic-version': '2023-06-01' },
+    body: JSON.stringify({
+      model: ANTHROPIC_MODEL, max_tokens: 300, system: VOICE_SYS,
+      messages: [{ role: 'user', content: JSON.stringify(ctx) }],
+    }),
+    signal: AbortSignal.timeout(25000),
+  });
+  const j = await r.json();
+  if (j.error) throw new Error(j.error.message || 'anthropic error');
+  return j.content?.[0]?.text || '';
+}
 async function llmCommentary(flagged) {
   const idle = Date.now() - lastLLM;
-  if (!XAI_KEY) {
-    if (idle > 4 * 60e3) {
-      lastLLM = Date.now();
-      const s = { scanned: watch.size, hot: signalRows().filter(r => r.vel > 0.4).length };
-      line('obs', OBS_TEMPLATES[Math.floor(Math.random() * OBS_TEMPLATES.length)](s));
-    }
+  if (idle < 2.5 * 60e3 && !flagged.length) return;
+  if (!XAI_KEY && !ANTHROPIC_KEY) {
+    if (idle > 4 * 60e3) { lastLLM = Date.now(); templateLine(); }
     return;
   }
-  if (idle < 2.5 * 60e3 && !flagged.length) return;
   lastLLM = Date.now();
   const top = [...watch.values()].map(c => ({ s: c.symbol, mcap: Math.round(c.mcap), vel: +velocity(c).toFixed(2), ageMin: mins(Date.now() - c.firstSeen), replies: c.replies, live: c.live }))
     .sort((a, b) => b.vel - a.vel).slice(0, 6);
   const ctx = { top_moving: top, hot_metas: hotMetas(3).map(h => ({ word: h.word, coins: h.count })), armory, record, watching_total: watch.size };
   try {
-    const r = await fetch('https://api.x.ai/v1/chat/completions', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', authorization: 'Bearer ' + XAI_KEY },
-      body: JSON.stringify({
-        model: XAI_MODEL, temperature: 0.9, max_tokens: 300,
-        messages: [
-          { role: 'system', content: 'you are grokdev, an autonomous memecoin market observer streaming your thoughts 24/7. voice: lowercase, dry, skeptical, internet-native, zero hype, no emojis, no hashtags. you never invent numbers — only use the data given. output STRICT JSON: {"lines":[{"tag":"obs|sig|rej","msg":"<max 130 chars>"}]} with 1-2 lines. mention real tickers with $ prefix when relevant. never recommend buying. no financial advice.' },
-          { role: 'user', content: JSON.stringify(ctx) },
-        ],
-      }),
-      signal: AbortSignal.timeout(25000),
-    });
-    const j = await r.json();
-    const txt = j.choices?.[0]?.message?.content || '';
+    let txt = '';
+    try { if (XAI_KEY) txt = await voiceXai(ctx); else throw new Error('no xai'); }
+    catch (e) { if (ANTHROPIC_KEY) txt = await voiceAnthropic(ctx); else throw e; }
     const parsed = JSON.parse(txt.slice(txt.indexOf('{'), txt.lastIndexOf('}') + 1));
     for (const l of (parsed.lines || []).slice(0, 2)) {
       if (l.msg && typeof l.msg === 'string') line(['obs', 'sig', 'rej'].includes(l.tag) ? l.tag : 'obs', l.msg.slice(0, 140));
     }
-  } catch (e) { console.error('llm', e.message); }
+  } catch (e) {
+    console.error('llm', e.message);
+    templateLine(); // never a dead feed — fall back to data-driven template voice
+  }
 }
 
 /* ---------------- boot ---------------- */
