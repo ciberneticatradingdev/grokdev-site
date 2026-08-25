@@ -179,7 +179,7 @@
   <div id="vitals">
     <div class="row"><span>cognitive load</span><b id="v-load">0.41</b></div>
     <div class="row"><span>signals / hr</span><b id="v-sig">17</b></div>
-    <div class="row"><span>accounts watched</span><b id="v-acc">412</b></div>
+    <div class="row"><span>coins watched</span><b id="v-acc">412</b></div>
     <div class="row"><span>narratives live</span><b id="v-narr">23</b></div>
     <div class="row"><span>armory armed</span><b id="v-armed">3</b></div>
     <div class="row"><span>deployments</span><b id="v-dep">0</b></div>
@@ -346,6 +346,7 @@ function overlay(title,sub,color){
 window.Grok={
   push(e){
     if(e.type==='line')line(e.tag||'obs',e.msg);
+    else if(e.type==='backfill'){for(const l of e.lines||[])instantLine(l.tag||'obs',l.msg,(Date.now()-(l.t||Date.now()))/1000)}
     else if(e.type==='vital'){V[e.key]=e.value;renderVitals()}
     else if(e.type==='armory'){ARM=e.rows;renderArmory();renderTicker()}
     else if(e.type==='signal'){SIG=e.rows;renderSignals()}
@@ -353,14 +354,22 @@ window.Grok={
   }
 };
 
-/* ---------- live wire or sim ---------- */
-const wsUrl=new URLSearchParams(location.search).get('ws');
+/* ---------- live wire or sim ----------
+   Brain endpoint resolution: ?ws=… param wins, else DEFAULT_WS.
+   With a brain configured we NEVER fall back to fake thoughts —
+   on disconnect the bot just idles and we retry. Sim only runs
+   when no brain is configured at all (pure demo). */
+const DEFAULT_WS='wss://grokdev-brain-production.up.railway.app';
+const wsUrl=new URLSearchParams(location.search).get('ws')||DEFAULT_WS;
 if(wsUrl){
-  line('sys','connecting to brain: '+wsUrl);
-  const ws=new WebSocket(wsUrl);
-  ws.onmessage=m=>{try{Grok.push(JSON.parse(m.data))}catch(e){}};
-  ws.onopen=()=>line('sys','brain link established. sim disabled.');
-  ws.onclose=()=>line('sys','brain link lost. reconnect required.');
+  let wasConnected=false,announcedDown=false;
+  (function connect(){
+    const ws=new WebSocket(wsUrl);
+    ws.onmessage=m=>{try{Grok.push(JSON.parse(m.data))}catch(e){}};
+    ws.onopen=()=>{announcedDown=false;if(!wasConnected){wasConnected=true;line('sys','brain link established. everything below is real.')}else line('sys','brain link restored.')};
+    ws.onclose=()=>{if(!announcedDown){announcedDown=true;line('sys','brain link lost. idling until it returns — no fake thoughts.')}setTimeout(connect,10000)};
+    ws.onerror=()=>{try{ws.close()}catch(e){}};
+  })();
 }else{
   startSim();
 }
